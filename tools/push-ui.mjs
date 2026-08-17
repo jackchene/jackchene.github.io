@@ -125,14 +125,21 @@ async function doCleanPush(message) {
 		if (!add.ok) return { ok: false, log: `git add 失败:\n${add.out}` };
 	}
 
-	// 与远程基准比较,拿到本次将要发布的全部差异
-	const diff = await run(["diff", "--name-status", "origin/main"]);
+	// 首次推送时远程还没有 main,以本地 HEAD 作为基准;后续推送使用 origin/main
+	const remoteBase = await run(["rev-parse", "--verify", "origin/main"]);
+	const hasRemoteBase = remoteBase.ok;
+	const base = hasRemoteBase ? "origin/main" : "HEAD";
+	const diffArgs = hasRemoteBase
+		? ["diff", "--name-status", base]
+		: ["diff", "--cached", "--name-status", "HEAD"];
+	const diff = await run(diffArgs);
 	if (!diff.ok) {
-		return { ok: false, log: "无法对比远程分支,请先在终端执行一次:\n  git fetch origin" };
+		return { ok: false, log: "无法读取远程基准,请检查 GitHub 连接后重试。" };
 	}
 	if (!diff.out.trim()) {
 		return { ok: true, log: "没有需要推送的内容。" };
 	}
+
 
 	// 从差异里只挑出文章的新增/删除动作,用于生成提交信息
 	const added = [];
@@ -169,14 +176,17 @@ async function doCleanPush(message) {
 		msg = parts.length ? `post: ${parts.join("; ")}` : "update: 博客更新";
 	}
 
-	// 干净推送:把 base 之后的一切(多个提交+暂存变更)合并为一个提交
-	const reset = await run(["reset", "--soft", "origin/main"]);
-	if (!reset.ok) return { ok: false, log: `git reset 失败:\n${reset.out}` };
+	// 干净推送:把 base 之后的一切合并为一个提交
+	if (hasRemoteBase) {
+		const reset = await run(["reset", "--soft", base]);
+		if (!reset.ok) return { ok: false, log: `git reset 失败:\n${reset.out}` };
+	}
 	const commit = await run(["commit", "-m", msg]);
 	if (!commit.ok) return { ok: false, log: `git commit 失败:\n${commit.out}` };
 
 	const logs = [`已合并为 1 个提交: ${msg}`];
-	const push = await run(["push"]);
+	const pushArgs = hasRemoteBase ? ["push"] : ["push", "-u", "origin", "main"];
+	const push = await run(pushArgs);
 	logs.push("$ git push", push.out);
 	logs.push(push.ok ? "✓ 推送完成" : "✗ 推送失败,请检查上方输出");
 	return { ok: push.ok, log: logs.join("\n") };
