@@ -1,0 +1,41 @@
+---
+// 本地写作时的管理台快速入口。仅开发模式渲染,生产构建中完全不存在。
+const enabled = import.meta.env.DEV;
+---
+{
+	enabled && (
+		<a
+			href="http://127.0.0.1:4399"
+			target="_blank"
+			rel="noopener"
+			title="打开博客管理台(新建/删除/发布/推送)"
+			class="dev-bridge"
+		>
+			🛠 管理台
+		</a>
+	)
+}
+
+<style>
+	.dev-bridge {
+		position: fixed;
+		left: 1.25rem;
+		bottom: 1.25rem;
+		z-index: 50;
+		padding: 0.5rem 1rem;
+		border-radius: 9999px;
+		background: color-mix(in oklab, var(--btn-regular-bg) 88%, transparent);
+		color: var(--btn-regular-text);
+		font-size: 0.85rem;
+		font-weight: 500;
+		backdrop-filter: blur(8px);
+		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+		transition:
+			transform 0.2s,
+			box-shadow 0.2s;
+	}
+	.dev-bridge:hover {
+		transform: translateY(-2px);
+		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+	}
+</style>
