@@ -2,13 +2,34 @@
 // 功能:笔记管理(新建/删除/发布) + git 变更预览 -> 二次确认 -> add/commit/push
 import http from "node:http";
 import { execFile, spawn } from "node:child_process";
-import { readdir, readFile, writeFile, rm } from "node:fs/promises";
+import { readdir, readFile, writeFile, rm, access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = path.join(ROOT, "src/content/posts");
 const PORT = 4399;
+
+const VSCODE_CANDIDATES = [
+	process.env.VSCODE_BIN,
+	process.env.CODE_BIN,
+	"F:\\Microsoft VS Code\\Code.exe",
+	"D:\\Microsoft VS Code\\Code.exe",
+	"C:\\Program Files\\Microsoft VS Code\\Code.exe",
+	"C:\\Program Files (x86)\\Microsoft VS Code\\Code.exe",
+].filter(Boolean);
+
+async function findVsCode() {
+	for (const candidate of VSCODE_CANDIDATES) {
+		try {
+			await access(candidate);
+			return candidate;
+		} catch {
+			// try the next known installation path
+		}
+	}
+	return "";
+}
 
 const run = (args) =>
 	new Promise((resolve) => {
@@ -38,15 +59,23 @@ const fmPick = (text, key) => {
 
 async function listPosts() {
 	const files = (await readdir(POSTS_DIR)).filter((f) => f.endsWith(".md"));
+	const remoteR = await run(["remote", "get-url", "origin"]);
+	const branch = (await run(["rev-parse", "--abbrev-ref", "HEAD"])).out.trim() || "main";
+	const repoBase = remoteR.ok ? remoteR.out.trim().replace(/\.git$/, "") : "";
 	return Promise.all(
 		files.map(async (f) => {
 			const text = await readFile(path.join(POSTS_DIR, f), "utf8");
+			const inRemote = repoBase
+				? (await run(["cat-file", "-e", `origin/main:src/content/posts/${f}`])).ok
+				: false;
 			return {
 				file: f,
 				title: fmPick(text, "title") || f,
 				published: fmPick(text, "published"),
 				tags: fmPick(text, "tags"),
 				draft: fmPick(text, "draft").includes("true"),
+				githubUrl: repoBase ? `${repoBase}/blob/${branch}/src/content/posts/${encodeURIComponent(f)}` : null,
+				inRemote,
 			};
 		}),
 	);
@@ -612,7 +641,12 @@ function fetchPosts(){
 			var act = p.draft
 				? '<button class="btn" data-act="publish">发布</button>'
 				: '<button class="btn ghost" data-act="unpublish">转草稿</button>';
-			return '<div class="post-row" data-file="' + esc(p.file) + '">' + badge + '<button class="btn ghost" data-act="edit">✎ 编辑</button><span class="post-title" title="' + esc(p.file) + '">' + esc(p.title) + '</span><span class="post-date">' + esc(p.published) + '</span><span class="post-actions">' + act + '<button class="btn danger" data-act="delete">删除</button></span></div>';
+			var gh = p.githubUrl
+				? (p.inRemote
+					? '<a class="btn ghost" href="' + esc(p.githubUrl) + '" target="_blank" rel="noopener" title="在 GitHub 上查看源文件">↗ GitHub</a>'
+					: '<button class="btn ghost" disabled title="推送后此按钮可用">未推送</button>')
+				: '';
+			return '<div class="post-row" data-file="' + esc(p.file) + '">' + badge + '<button class="btn ghost" data-act="edit">✎ 编辑</button>' + gh + '<span class="post-title" title="' + esc(p.file) + '">' + esc(p.title) + '</span><span class="post-date">' + esc(p.published) + '</span><span class="post-actions">' + act + '<button class="btn danger" data-act="delete">删除</button></span></div>';
 		}).join('');
 		// 事件委托:一次绑定,所有 post-row 子按钮统一处理
 		el('posts').onclick = function(e){
@@ -645,13 +679,15 @@ function createPost(){
 }
 
 function openInEditor(file){
-	// 火并忘式请求:告诉后端"在编辑器中打开该文件",不依赖返回值
-	fetch('/api/posts/open', {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ file: file })
-	}).catch(function(){});
-}
+		fetch('/api/posts/open', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ file: file })
+		}).then(function(r){ return r.json(); }).then(function(result){
+			if (result.error) toast('打开编辑器失败: ' + result.error);
+			else toast('已在 VS Code 中打开: ' + file);
+		}).catch(function(){ toast('打开编辑器失败: 管理台无法连接'); });
+	}
 
 function publishPost(file){
 	api('/api/posts/publish', { file: file, draft: false }).then(function(r){
@@ -769,17 +805,23 @@ const server = http.createServer((req, res) => {
 			.catch((e) => json(400, { error: String(e.message || e) }));
 		return;
 	}
-	if (req.method === "POST" && req.url === "/api/posts/open") {
-		body()
-			.then((b) => {
-				const full = safePostPath(b.file);
-				spawn("cmd", ["/c", "code", `"${full}"`], { detached: true, stdio: "ignore", windowsHide: true }).unref();
-				return { file: b.file, opened: true };
-			})
-			.then((r) => json(200, r))
-			.catch((e) => json(400, { error: String(e.message || e) }));
-		return;
-	}
+		if (req.method === "POST" && req.url === "/api/posts/open") {
+			body()
+				.then(async (b) => {
+					const full = safePostPath(b.file);
+					const editor = await findVsCode();
+					if (!editor) throw new Error("未找到 VS Code,请确认已安装或设置 VSCODE_BIN 环境变量");
+					spawn(editor, ["--reuse-window", full], {
+						detached: true,
+						stdio: "ignore",
+						windowsHide: false,
+					}).unref();
+					return { file: b.file, opened: true, editor };
+				})
+				.then((r) => json(200, r))
+				.catch((e) => json(400, { error: String(e.message || e) }));
+			return;
+		}
 	if (req.method === "POST" && req.url === "/api/push") {
 		body()
 			.then((b) => doCleanPush(b.message))
