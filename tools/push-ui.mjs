@@ -62,12 +62,23 @@ async function listPosts() {
 	const remoteR = await run(["remote", "get-url", "origin"]);
 	const branch = (await run(["rev-parse", "--abbrev-ref", "HEAD"])).out.trim() || "main";
 	const repoBase = remoteR.ok ? remoteR.out.trim().replace(/\.git$/, "") : "";
+	let siteBase = "";
+	try {
+		const astroCfg = await readFile(path.join(ROOT, "astro.config.mjs"), "utf8");
+		siteBase = astroCfg.match(/site:\s*"([^"]+)"/)?.[1]?.replace(/\/$/, "") || "";
+	} catch {
+		siteBase = "";
+	}
 	return Promise.all(
 		files.map(async (f) => {
 			const text = await readFile(path.join(POSTS_DIR, f), "utf8");
 			const inRemote = repoBase
 				? (await run(["cat-file", "-e", `origin/main:src/content/posts/${f}`])).ok
 				: false;
+			const remoteDraft = inRemote
+				? fmPick((await run(["show", `origin/main:src/content/posts/${f}`])).out, "draft").includes("true")
+				: true;
+			const slug = f.replace(/\.md$/, "");
 			return {
 				file: f,
 				title: fmPick(text, "title") || f,
@@ -75,7 +86,9 @@ async function listPosts() {
 				tags: fmPick(text, "tags"),
 				draft: fmPick(text, "draft").includes("true"),
 				githubUrl: repoBase ? `${repoBase}/blob/${branch}/src/content/posts/${encodeURIComponent(f)}` : null,
+				liveUrl: siteBase ? `${siteBase}/posts/${slug}/` : null,
 				inRemote,
+				remoteDraft,
 			};
 		}),
 	);
@@ -641,12 +654,17 @@ function fetchPosts(){
 			var act = p.draft
 				? '<button class="btn" data-act="publish">发布</button>'
 				: '<button class="btn ghost" data-act="unpublish">转草稿</button>';
+			var live;
+			if (p.remoteDraft && p.draft) live = '<button class="btn ghost" disabled title="草稿不会上线,发布并推送后可访问">草稿未上线</button>';
+			else if (!p.inRemote || p.remoteDraft) live = '<button class="btn ghost" disabled title="发布推送后线上生效">更新未推送</button>';
+			else if (p.liveUrl) live = '<a class="btn" href="' + esc(p.liveUrl) + '" target="_blank" rel="noopener" title="访客看到的线上文章页">↗ 线上</a>';
+			else live = '';
 			var gh = p.githubUrl
 				? (p.inRemote
 					? '<a class="btn ghost" href="' + esc(p.githubUrl) + '" target="_blank" rel="noopener" title="在 GitHub 上查看源文件">↗ GitHub</a>'
 					: '<button class="btn ghost" disabled title="推送后此按钮可用">未推送</button>')
 				: '';
-			return '<div class="post-row" data-file="' + esc(p.file) + '">' + badge + '<button class="btn ghost" data-act="edit">✎ 编辑</button>' + gh + '<span class="post-title" title="' + esc(p.file) + '">' + esc(p.title) + '</span><span class="post-date">' + esc(p.published) + '</span><span class="post-actions">' + act + '<button class="btn danger" data-act="delete">删除</button></span></div>';
+			return '<div class="post-row" data-file="' + esc(p.file) + '">' + badge + '<button class="btn ghost" data-act="edit">✎ 编辑</button>' + live + gh + '<span class="post-title" title="' + esc(p.file) + '">' + esc(p.title) + '</span><span class="post-date">' + esc(p.published) + '</span><span class="post-actions">' + act + '<button class="btn danger" data-act="delete">删除</button></span></div>';
 		}).join('');
 		// 事件委托:一次绑定,所有 post-row 子按钮统一处理
 		el('posts').onclick = function(e){
